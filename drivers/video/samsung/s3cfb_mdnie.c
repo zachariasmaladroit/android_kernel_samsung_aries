@@ -74,6 +74,7 @@ struct clk		*mdnie_clock;
 #define TRUE 1
 #define FALSE 0
 
+static DEFINE_MUTEX(mdnie_use);
 
 typedef struct {
 	u16 addr;
@@ -87,14 +88,14 @@ typedef enum
 	mDNIe_VIDEO_WARM_MODE,
 	mDNIe_VIDEO_COLD_MODE,
 	mDNIe_CAMERA_MODE,
-	mDNIe_NAVI
+	mDNIe_NAVI,
+	mDNIe_BYPASS_MODE
 }Lcd_mDNIe_UI;
 
 struct class *mdnieset_ui_class;
 struct device *switch_mdnieset_ui_dev;
 struct class *mdnieset_outdoor_class;
 struct device *switch_mdnieset_outdoor_dev;
-
 
 mDNIe_data_type mDNIe_Video[]= 
 {
@@ -143,9 +144,8 @@ mDNIe_data_type mDNIe_Camera_Outdoor_Mode[]=
 	{END_SEQ, 0x0000},
 };
 
-mDNIe_data_type mDNIe_UI[]= 
+mDNIe_data_type mDNIe_Bypass[]=
 {
-//bypass
 	{0x0084, 0x0000},
 	{0x0090, 0x0000},
 	{0x0094, 0x0fff},
@@ -153,24 +153,23 @@ mDNIe_data_type mDNIe_UI[]=
 	{0x009C, 0x0010},
 	{0x00AC, 0x0000},
 	{0x00B4, 0x03ff},
-/*
-	//start
-	0x0084,0x0040, // HDTR
-	0x0090,0x0000, // DeConTh off
-	0x0094,0x0FFF, // DirTh off
-	0x0098,0x005C, // SimplTh off
-	0x009C,0x0FFA, // 0x0012,  DE CEonoff CEdark AMOLED ---- 0000 000|0| 000|0
-	0x00AC,0x0500, // 0x0000,  skinoff CSoff
-	0x00B4,0x0001, // 0x03FF,  DETh ---- --00 0000 0000
-	0x00C0,0x0400, // PCC skin
-	0x00C4,0x6A74,
-	0x00C8,0x0099,
-	0x00D0,0x01B6,
-	0x0084,0x0040,
-	//0x0084,0x0000, // HDTR
-	//0x0100,0x8080,
-	//end
-*/
+	{END_SEQ, 0x0000},
+};
+
+mDNIe_data_type mDNIe_UI[]=
+{
+	{0x0084, 0x0040},
+	{0x0090, 0x0000},
+	{0x0094, 0x0fff},
+	{0x0098, 0x005C},
+	{0x009C, 0x0ff0},
+	{0x00AC, 0x0080},
+	{0x00B4, 0x0180},
+	{0x00C0, 0x0400},
+	{0x00C4, 0x7200},
+	{0x00C8, 0x008D},
+	{0x00D0, 0x00C0},
+	{0x0100, 0x0000},
 	{END_SEQ, 0x0000},
 };
 
@@ -250,7 +249,7 @@ mDNIe_data_type mDNIe_Outdoor_Mode[]=
 };
 
 
-Lcd_mDNIe_UI current_mDNIe_UI = mDNIe_UI_MODE; // mDNIe Set Status Checking Value.
+Lcd_mDNIe_UI current_mDNIe_UI = mDNIe_BYPASS_MODE; // mDNIe Set Status Checking Value.
 u8 current_mDNIe_OutDoor_OnOff = FALSE;
 
 int mDNIe_Tuning_Mode = FALSE;
@@ -500,6 +499,7 @@ int s3c_mdnie_setup(void)
 
 void mDNIe_Mode_Change(mDNIe_data_type *mode)
 {
+	mutex_lock(&mdnie_use);
 
 	if(mDNIe_Tuning_Mode == TRUE)
 	{
@@ -517,6 +517,8 @@ void mDNIe_Mode_Change(mDNIe_data_type *mode)
 		}
 		s3c_mdnie_unmask();
 	}
+
+	mutex_unlock(&mdnie_use);
 }
 
 void mDNIe_Set_Mode(Lcd_mDNIe_UI mode, u8 mDNIe_Outdoor_OnOff)
@@ -548,14 +550,16 @@ void mDNIe_Set_Mode(Lcd_mDNIe_UI mode, u8 mDNIe_Outdoor_OnOff)
 			case mDNIe_NAVI:
 				mDNIe_Mode_Change(mDNIe_Outdoor_Mode);
 			break;
+
+			case mDNIe_BYPASS_MODE:
+				mDNIe_Mode_Change(mDNIe_Bypass);
+			break;
 		}
 
 		current_mDNIe_UI = mode;
-		#if 0
-		if(current_mDNIe_UI == mDNIe_UI_MODE)
+		if(current_mDNIe_UI == mDNIe_UI_MODE || current_mDNIe_UI == mDNIe_BYPASS_MODE)
 			current_mDNIe_OutDoor_OnOff = FALSE;
 		else
-		#endif	
 			current_mDNIe_OutDoor_OnOff = TRUE;
 	}
 	else
@@ -584,6 +588,10 @@ void mDNIe_Set_Mode(Lcd_mDNIe_UI mode, u8 mDNIe_Outdoor_OnOff)
 
 			case mDNIe_NAVI:
 				mDNIe_Mode_Change(mDNIe_UI);
+			break;
+
+			case mDNIe_BYPASS_MODE:
+				mDNIe_Mode_Change(mDNIe_Bypass);
 			break;
 		}
 		
@@ -633,6 +641,10 @@ static ssize_t mdnieset_ui_file_cmd_show(struct device *dev,
 		case mDNIe_NAVI:
 			mdnie_ui = 5;
 			break;
+
+		case mDNIe_BYPASS_MODE:
+			mdnie_ui = 6;
+			break;
 	}
 	return sprintf(buf,"%u\n",mdnie_ui);
 }
@@ -671,7 +683,11 @@ static ssize_t mdnieset_ui_file_cmd_store(struct device *dev,
 		case SIG_MDNIE_NAVI:
 			current_mDNIe_UI = mDNIe_NAVI;
 			break;
-	
+
+		case SIG_MDNIE_BYPASS_MODE:
+			current_mDNIe_UI = mDNIe_BYPASS_MODE;
+			break;
+
 		default:
 			printk("\nmdnieset_ui_file_cmd_store value is wrong : value(%d)\n",value);
 			break;
@@ -1035,6 +1051,8 @@ void mDNIe_Mode_set_for_backlight(u16 *buf)
 	int cnt = 0;
 
 	if(mdnie_tuning_backlight){
+		mutex_lock(&mdnie_use);
+
 		s3c_mdnie_mask();
 
 		while ((*(buf+i)) != END_SEQ)
@@ -1069,6 +1087,7 @@ void mDNIe_Mode_set_for_backlight(u16 *buf)
 		}
 
 		s3c_mdnie_unmask();
+		mutex_unlock(&mdnie_use);
 	}
 }
 EXPORT_SYMBOL(mDNIe_Mode_set_for_backlight);
@@ -1220,8 +1239,6 @@ int s3c_mdnie_init_global(struct s3cfb_global *s3cfb_ctrl)
 	
 	s3c_ielcd_logic_start();
 	s3c_ielcd_init_global(s3cfb_ctrl);
-
-	s5p_mdine_pwm_enable(1);
 
 	return 0;
 
